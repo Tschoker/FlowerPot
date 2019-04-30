@@ -30,40 +30,6 @@ NewPing sonar(SonarTrgPin, SonarEcoPin);
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-class MOISTURE {
-  const byte pin;
-  float moistureLevel;
-  float lastMoistureLevel;
-
-public:
-  MOISTURE(byte attachTo) :
-    pin(attachTo)
-  {
-  }
-
-  void setup(){
-    pinMode(pin, INPUT);
-    moistureLevel = 0.0;
-    lastMoistureLevel = 0.0;
-  }
-  void loop(){
-    //moistureLevel = (float)analogRead(pin)*100.0f/1024.0f;
-    moistureLevel = (float)analogRead(pin);
-    Serial.print("Moisture Level: ");
-    Serial.println(moistureLevel);
-    if(moistureLevel < (lastMoistureLevel - 5) or moistureLevel > (lastMoistureLevel + 5)){
-      Serial.println("Moisture Level Changed.");
-      client.publish(moisture_topic, String(moistureLevel).c_str(), true);
-      lastMoistureLevel = moistureLevel;
-    }
-    if (moistureLevel < moistureLimit){
-      //activate pump
-    }
-  }
-};
-
-MOISTURE moisture(MoisturePin);
-
 class PUMP {
   const byte pin;
   unsigned long nextStart;
@@ -136,9 +102,49 @@ public:
       active = FALSE;
     }
   }
+  
+  void start(){
+    //set the next start to the past so pump shall activate now
+    nextstart = millis() - (WaterInterval_h*1000);  
+  }
 };
 
 PUMP pump(PumpPin);
+
+class MOISTURE {
+  const byte pin;
+  float moistureLevel;
+  float lastMoistureLevel;
+
+public:
+  MOISTURE(byte attachTo) :
+    pin(attachTo)
+  {
+  }
+
+  void setup(){
+    pinMode(pin, INPUT);
+    moistureLevel = (float)analogRead(pin);
+    lastMoistureLevel = (float)analogRead(pin);
+  }
+  void loop(){
+    //moistureLevel = (float)analogRead(pin)*100.0f/1024.0f;
+    moistureLevel = (float)analogRead(pin);
+    Serial.print("Moisture Level: ");
+    Serial.println(moistureLevel);
+    if(moistureLevel < (lastMoistureLevel - 5) or moistureLevel > (lastMoistureLevel + 5)){
+      Serial.println("Moisture Level Changed.");
+      client.publish(moisture_topic, String(moistureLevel).c_str(), true);
+      lastMoistureLevel = moistureLevel;
+    }
+    if (moistureLevel < moistureLimit){
+      //activate pump
+      pump.start();
+    }
+  }
+};
+
+MOISTURE moisture(MoisturePin);
 
 class LED {
   const byte pin;
