@@ -6,110 +6,43 @@
 
 #include <config.cpp>
 
-const byte PumpPin = D2;
+const byte PumpPin1 = D2;
+const byte PumpPin2 = D7;
+const byte PumpPin3 = D0;
 const byte LEDPin = D1;
 const byte SonarTrgPin = D5;
-const byte SonarEcoPin = D6e;
+const byte SonarEcoPin = D6;
 const byte MoisturePin = A0;
-const byte WaterInterval_h = 5; //time between 2 waterings
 const byte WaterDuration_sec = 60; //duration of one watering
-const byte WaitDuration_min = 5; //how long to wait after watering before normal operation continues
 const byte minLevel_cm = 1;
 const byte rLevelD_cm = 3;
 const byte yLevelD_cm = 5;
 const byte yLevelU_cm = 7;
 const byte gLevelU_cm = 10;
 const byte blinkFreq_sec = 3;
+const byte sensorHeight = 20;
 const byte height = 15;
 const byte length = 60;
 const byte depth = 25;
 const float moistureLimit = 10.0;
+float waterLevel = 0;
+enum Status {
+  STARTED=-1,
+  OFF=0,
+  ON=1,
+  PUMP1=2,
+  PUMP2=3,
+  PUMP3=4,
+  ERROR=5
+} status = STARTED, lastStatus = OFF;
+const char* statusName[] = {"OFF", "ON", "PUMP1", "PUMP2", "PUMP3", "ERROR"};
+unsigned long lastStart = 0;
+#define MAX_MSG_LEN (128)
 
-
-NewPing sonar(SonarTrgPin, SonarEcoPin);
+NewPing sonar(SonarTrgPin, SonarEcoPin, sensorHeight);
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-class PUMP {
-  const byte pin;
-  unsigned long nextStart;
-  enum Status {
-    OFF=0,
-    ON=1,
-    WAIT=2
-  } status;
-  enum Active {
-    FALSE=0,
-    TRUE=1
-  } active;
-
-public:
-  PUMP(byte attachTo) :
-    pin(attachTo)
-  {
-  }
-
-  void setup(){
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, LOW);
-    status = OFF;
-    active = TRUE;
-    nextStart = millis();
-  }
-
-  void loop(){
-    if(active == TRUE) {
-      switch(status){
-        case OFF:
-          if (millis() >= nextStart){
-            digitalWrite(pin, HIGH);
-            status=ON;
-            Serial.println("*****Pump activated.");
-            client.publish(status_topic, String("ON").c_str(), true);
-            break;
-          }
-        case ON:
-          if (millis() >= nextStart + (WaterDuration_sec*1000)) {
-            digitalWrite(pin, LOW);
-            status=WAIT;
-            Serial.println("*****Pump deactivated. Waiting period.");
-            client.publish(status_topic, String("WAIT").c_str(), true);
-            break;
-          }
-        case WAIT:
-          if (millis() >= nextStart + (WaterDuration_sec*1000) + (WaitDuration_min*1000)){
-          //if (millis() >= nextStart + (WaterDuration_sec*1000) + (WaitDuration_min*60*1000)){
-            status=OFF;
-            Serial.println("*****Waiting time over. Pump off.");
-            client.publish(status_topic, String("OFF").c_str(), true);
-            nextStart = nextStart + (WaterInterval_h*1000);
-            //nextStart = nextStart + (WaterInterval_h*60*60*1000);
-          }
-          break;
-      }
-    }
-    else {
-      digitalWrite(pin, LOW);
-      status=OFF;
-    }
-  }
-
-  void setActive(byte val){
-    if(val == 1){
-      active = TRUE;
-    }
-    else {
-      active = FALSE;
-    }
-  }
-  
-  void start(){
-    //set the next start to the past so pump shall activate now
-    nextstart = millis() - (WaterInterval_h*1000);  
-  }
-};
-
-PUMP pump(PumpPin);
 
 class MOISTURE {
   const byte pin;
@@ -125,7 +58,7 @@ public:
   void setup(){
     pinMode(pin, INPUT);
     moistureLevel = (float)analogRead(pin);
-    lastMoistureLevel = (float)analogRead(pin);
+    lastMoistureLevel = 0.0;
   }
   void loop(){
     //moistureLevel = (float)analogRead(pin)*100.0f/1024.0f;
@@ -137,10 +70,6 @@ public:
       client.publish(moisture_topic, String(moistureLevel).c_str(), true);
       lastMoistureLevel = moistureLevel;
     }
-    if (moistureLevel < moistureLimit){
-      //activate pump
-      pump.start();
-    }
   }
 };
 
@@ -148,11 +77,11 @@ MOISTURE moisture(MoisturePin);
 
 class LED {
   const byte pin;
-  enum Status{
+  enum LEDStatus{
     OFF=0,
     ON=1,
     BLINK=2
-  } status;
+  } LEDstatus;
   unsigned long lastToggle;
 
 public:
@@ -163,12 +92,12 @@ public:
   void setup(){
     pinMode(pin, OUTPUT);
     digitalWrite(pin, HIGH);
-    status = ON;
+    LEDstatus = ON;
   }
   void loop(){
     //Serial.print("Current LED Status: ");
     //Serial.println(status);
-    switch (status){
+    switch (LEDstatus){
       case OFF:
         digitalWrite(pin, LOW);
         Serial.println("LED Off.");
@@ -192,15 +121,15 @@ public:
     //Serial.println(val);
     switch (val){
       case 0:
-        status = OFF;
+        LEDstatus = OFF;
         //Serial.println("OFF");
         break;
       case 1:
-        status = ON;
+        LEDstatus = ON;
         //Serial.println("ON");
         break;
       case 2:
-        status = BLINK;
+        LEDstatus = BLINK;
         //Serial.println("BLINK");
         break;
     }
@@ -219,21 +148,22 @@ public:
     lastWaterLevel_cm = 0;
   }
   void loop(){
-    curWaterLevel_cm = height - sonar.convert_cm(sonar.ping_median(5));
+    curWaterLevel_cm = sensorHeight - sonar.convert_cm(sonar.ping_median(5));
     Serial.print("Waterlevel: ");
     Serial.println(curWaterLevel_cm);
     if(curWaterLevel_cm <= minLevel_cm){
-      pump.setActive(0);
+      status = ERROR;
       led.setStatus(2);
       //Serial.println("Debug Pump 1");
     }
+    else if (curWaterLevel_cm > minLevel_cm and status == ERROR){
+      status = OFF;
+    }
     else if(curWaterLevel_cm > minLevel_cm and curWaterLevel_cm <= rLevelD_cm){
-      pump.setActive(1);
       led.setStatus(2);
       //Serial.println("Debug Pump 2");
     }
     else if(curWaterLevel_cm > rLevelD_cm and curWaterLevel_cm <= yLevelU_cm){
-      pump.setActive(1);
       if (curWaterLevel_cm > lastWaterLevel_cm){
         led.setStatus(2);
         //Serial.println("Debug Pump 3");
@@ -244,12 +174,10 @@ public:
       }
     }
     else if(curWaterLevel_cm > yLevelU_cm and curWaterLevel_cm <= yLevelD_cm){
-      pump.setActive(1);
       led.setStatus(1);
       //Serial.println("Debug Pump 5");
     }
     else if(curWaterLevel_cm > yLevelD_cm and curWaterLevel_cm <= gLevelU_cm){
-      pump.setActive(1);
       if (curWaterLevel_cm > lastWaterLevel_cm){
         led.setStatus(1);
         //Serial.println("Debug Pump 6");
@@ -260,46 +188,14 @@ public:
       }
     }
     else if(curWaterLevel_cm > gLevelU_cm){
-      pump.setActive(1);
       led.setStatus(0);
       //Serial.println("Debug Pump 8");
     }
 
-/*
-    switch(curWaterLevel_cm){
-      case 0 ... minLevel_cm:
-        pump.setActive(0);
-        led.setStatus(2);
-      case minLevel_cm+1 ... rLevelD_cm:
-        pump.setActive(1);
-        led.setStatus(2);
-      case rLevelD_cm+1 ... yLevelU_cm:
-        pump.setActive(1);
-        if (curWaterLevel_cm > lastWaterLevel_cm){
-          led.setStatus(2);
-        }
-        else {
-          led.setStatus(1);
-        }
-      case yLevelU_cm+1 ... yLevelD_cm:
-        pump.setActive(1);
-        led.setStatus(1);
-      case yLevelD_cm+1 ... gLevelU_cm:
-        pump.setActive(1);
-        if (curWaterLevel_cm > lastWaterLevel_cm){
-          led.setStatus(1);
-        }
-        else {
-          led.setStatus(0);
-        }
-      case gLevelU_cm+1 ... height:
-        pump.setActive(1);
-        led.setStatus(0);
-    }
-*/
     if (curWaterLevel_cm < lastWaterLevel_cm-1 or curWaterLevel_cm > lastWaterLevel_cm+1){
-      client.publish(waterlevel_topic, String(curWaterLevel_cm).c_str(), true);
-      client.publish(watervolume_topic, String((float)curWaterLevel_cm*(float)length*(float)depth/1000).c_str(), true);
+      waterLevel=curWaterLevel_cm;
+      client.publish(waterlevel_topic, String(waterLevel).c_str(), true);
+      client.publish(watervolume_topic, String((float)waterLevel*(float)length*(float)depth/1000).c_str(), true);
       Serial.println("MQTT Message updated.");
       lastWaterLevel_cm = curWaterLevel_cm;
     }
@@ -334,15 +230,46 @@ void reconnect() {
  while (!client.connected()) {
   Serial.print("Attempting MQTT connection...");
   // Attempt to connect
-  if (client.connect("nodemcu", mqtt_user, mqtt_password)) {
-  Serial.println("connected");
+  if (client.connect("FLOWERPOT")) {
+      Serial.println("MQTT connected");
+      // Once connected, publish an announcement...
+      client.publish(status_topic, "OFF");
+      // ... and resubscribe
+      client.subscribe(status_topic);
   } else {
-  Serial.print("failed, rc=");
-  Serial.print(client.state());
-  Serial.println(" try again in 2 seconds");
-  delay(2000);
+    Serial.print("MQTT failed, state ");
+    Serial.print(client.state());
+    Serial.println(", retrying...");
+    // Wait before retrying
+    delay(2500);
   }
  }
+}
+
+void callback(char *msgTopic, byte *msgPayload, unsigned int msgLength) {
+  // copy payload to a static string
+  static char message[MAX_MSG_LEN+1];
+  int mylength = length;
+  if (length > MAX_MSG_LEN) {
+    mylength = MAX_MSG_LEN;
+  }
+  strncpy(message, (char *)msgPayload, mylength);
+  message[mylength] = '\0';
+
+  Serial.print("topics message received: ");
+  Serial.print(msgTopic);
+  Serial.print(" / ");
+  Serial.println(message);
+
+  if (strcmp(message, statusName[status]) != 0) {
+    Serial.println("Changed Status received");
+    if (strcmp(message, "ON") == 0) {
+      status = ON;
+      lastStart = millis();
+    } else if (strcmp(message, "OFF") == 0) {
+      status = OFF;
+    }
+  }
 }
 
 void setup()
@@ -360,20 +287,59 @@ void setup()
    Serial.println("MQTT not connected - trying reconnect!");
    reconnect();
   }
-  client.loop();
+  client.setCallback(callback);
 
   moisture.setup();
-  pump.setup();
   led.setup();
   wLevel.setup();
 
 }
 
 void loop() {
+  client.loop();
   moisture.loop();
-  pump.loop();
   led.loop();
   wLevel.loop();
+  if (status != lastStatus){
+    Serial.print("Updating MQTT Status to: ");
+    Serial.println(String(statusName[status]).c_str());
+    client.publish(status_topic, String(statusName[status]).c_str(), true);
+    lastStatus = status;
+  }
+  if (status != ERROR) {
+    switch(status) {
+      case ON:
+        digitalWrite(PumpPin1, HIGH);
+        digitalWrite(PumpPin2, LOW);
+        digitalWrite(PumpPin3, LOW);
+        status = PUMP1;
+        break;
+      case PUMP1:
+        if(lastStart + (WaterDuration_sec*1000) < millis()) {
+          digitalWrite(PumpPin1, LOW);
+          digitalWrite(PumpPin2, HIGH);
+          digitalWrite(PumpPin3, LOW);
+          status = PUMP2;
+        }
+        break;
+      case PUMP2:
+        if(lastStart + (WaterDuration_sec*1000*2) < millis()) {
+          digitalWrite(PumpPin1, LOW);
+          digitalWrite(PumpPin2, LOW);
+          digitalWrite(PumpPin3, HIGH);
+          status = PUMP3;
+        }
+        break;
+      case PUMP3:
+        if(lastStart + (WaterDuration_sec*1000*3) < millis()) {
+          digitalWrite(PumpPin1, LOW);
+          digitalWrite(PumpPin2, LOW);
+          digitalWrite(PumpPin3, LOW);
+          status = OFF;
+        }
+        break;
+    }
+  }
   //xxx delay(100);
-  delay(10000);
+  delay(1000);
 }
