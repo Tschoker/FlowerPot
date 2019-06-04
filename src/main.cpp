@@ -6,6 +6,8 @@
 
 #include <config.cpp>
 
+#define MAX_MSG_LEN (128)
+
 const byte PumpPin1 = D2;
 const byte PumpPin2 = D7;
 const byte PumpPin3 = D0;
@@ -26,6 +28,9 @@ const byte length = 60;
 const byte depth = 25;
 const float moistureLimit = 10.0;
 float waterLevel = 0;
+unsigned long lastHeartbeat = 0;
+char lastHeartbeatVal[MAX_MSG_LEN+1] = "";
+
 enum Status {
   STARTED=-1,
   OFF=0,
@@ -37,7 +42,7 @@ enum Status {
 } status = OFF, lastStatus = STARTED;
 const char* statusName[] = {"OFF", "ON", "PUMP1", "PUMP2", "PUMP3", "ERROR"};
 unsigned long lastStart = 0;
-#define MAX_MSG_LEN (128)
+
 
 NewPing sonar(SonarTrgPin, SonarEcoPin, sensorHeight);
 WiFiClient espClient;
@@ -230,12 +235,19 @@ void reconnect() {
  while (!client.connected()) {
   Serial.print("Attempting MQTT connection...");
   // Attempt to connect
-  if (client.connect("FLOWERPOT", mqtt_user, mqtt_password)) {
+
+  if (client.connect("FLOWERPOT", mqtt_user, mqtt_password, will_topic, 0, 1, "false")) {
       Serial.println("MQTT connected");
       // Once connected, publish an announcement...
       client.publish(status_topic, "OFF");
+      client.publish(will_topic, "true");
+      delay(1000);
       // ... and resubscribe
+      Serial.println("Subscribe to Status");
       client.subscribe(status_topic);
+      delay(500);
+      client.subscribe(heartbeat_topic);
+
   } else {
     Serial.print("MQTT failed, state ");
     Serial.print(client.state());
@@ -249,26 +261,45 @@ void reconnect() {
 void callback(char *msgTopic, byte *msgPayload, unsigned int msgLength) {
   // copy payload to a static string
   static char message[MAX_MSG_LEN+1];
-  int mylength = length;
-  if (length > MAX_MSG_LEN) {
-    mylength = MAX_MSG_LEN;
+  //int mylength = length;
+  if (msgLength > MAX_MSG_LEN) {
+    //mylength = MAX_MSG_LEN;
+    strncpy(message, (char *)msgPayload, MAX_MSG_LEN);
+    message[MAX_MSG_LEN] = '\0';
   }
-  strncpy(message, (char *)msgPayload, mylength);
-  message[mylength] = '\0';
+  else {
+    strncpy(message, (char *)msgPayload, msgLength);
+    message[msgLength] = '\0';
+  }
 
   Serial.print("topics message received: ");
   Serial.print(msgTopic);
   Serial.print(" / ");
-  Serial.println(message);
+  Serial.print(message);
+  Serial.print(" / ");
+  Serial.println(msgLength);
 
-  if (!String(message).startsWith(statusName[status])) {
-  //if (strcmp(message, statusName[status]) != 0) {
-    Serial.println("Changed Status received");
-    if (String(message).startsWith("ON")) {
-      status = ON;
-      lastStart = millis();
-    } else if (String(message).startsWith("OFF")) {
-      status = OFF;
+  if (String(msgTopic) == status_topic) {
+    if (!String(message).startsWith(statusName[status])) {
+    //if (strcmp(message, statusName[status]) != 0) {
+      Serial.println("Changed Status received");
+      if (String(message).startsWith("ON")) {
+        Serial.println("Set status to on");
+        status = ON;
+        lastStart = millis();
+      } else if (String(message).startsWith("OFF")) {
+        Serial.println("Set status to off");
+        status = OFF;
+      }
+    }
+  }
+  if (String(msgTopic) == heartbeat_topic) {
+    if (String(message)!=String(lastHeartbeatVal)) {
+      Serial.print("New Heartbeat Value: ");
+      Serial.println(message);
+      //lastHeartbeatVal=String(message);
+      strncpy(lastHeartbeatVal, (char *)message, MAX_MSG_LEN+1);
+      lastHeartbeat = millis();
     }
   }
 }
@@ -297,6 +328,7 @@ void setup()
   }
   client.setCallback(callback);
 
+  delay(500);
   moisture.setup();
   led.setup();
   wLevel.setup();
@@ -308,6 +340,7 @@ void loop() {
   moisture.loop();
   led.loop();
   wLevel.loop();
+  Serial.print("Status: ");
   Serial.println(String(statusName[status]).c_str());
   if (status != lastStatus){
     Serial.print("Updating MQTT Status to: ");
@@ -356,5 +389,9 @@ void loop() {
     }
   }
   //xxx delay(100);
+  if (lastHeartbeat + 120000 < millis()){
+    Serial.println("Heartbeat lost - restart");
+    ESP.restart();
+  }
   delay(100);
 }

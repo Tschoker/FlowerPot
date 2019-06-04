@@ -8,3 +8,5 @@
 #define watervolume_topic "myNodes/FlowerPot/WaterVolume"
 #define status_topic "myNodes/FlowerPot/Status"
 #define moisture_topic "myNodes/FlowerPot/Moisture"
+#define will_topic "myNodes/FlowerPot/Online"
+#define heartbeat_topic "myNodes/Heartbeat"
