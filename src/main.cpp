@@ -17,13 +17,13 @@ const byte SonarEcoPin = D6;
 const byte MoisturePin = A0;
 const byte WaterDuration_sec = 60; //duration of one watering
 const byte minLevel_cm = 1;
-const byte rLevelD_cm = 3;
-const byte yLevelD_cm = 5;
-const byte yLevelU_cm = 7;
-const byte gLevelU_cm = 10;
+const byte rLevelD_cm = 2;
+const byte yLevelD_cm = 3;
+const byte yLevelU_cm = 4;
+const byte gLevelU_cm = 7;
 const byte blinkFreq_sec = 3;
-const byte sensorHeight = 20;
-const byte height = 15;
+const byte sensorHeight = 15;
+//const byte height = 15;
 const byte length = 60;
 const byte depth = 25;
 const float moistureLimit = 10.0;
@@ -32,15 +32,15 @@ unsigned long lastHeartbeat = 0;
 char lastHeartbeatVal[MAX_MSG_LEN+1] = "";
 
 enum Status {
-  STARTED=-1,
   OFF=0,
   ON=1,
   PUMP1=2,
   PUMP2=3,
   PUMP3=4,
-  ERROR=5
+  ERROR=5,
+  STARTED=6
 } status = OFF, lastStatus = STARTED;
-const char* statusName[] = {"OFF", "ON", "PUMP1", "PUMP2", "PUMP3", "ERROR"};
+const char* statusName[] = {"OFF", "ON", "PUMP1", "PUMP2", "PUMP3", "ERROR", "STARTED"};
 unsigned long lastStart = 0;
 
 
@@ -286,10 +286,12 @@ void callback(char *msgTopic, byte *msgPayload, unsigned int msgLength) {
       if (String(message).startsWith("ON")) {
         Serial.println("Set status to on");
         status = ON;
+        lastStatus = ON; //to prevent resending the just received status
         lastStart = millis();
       } else if (String(message).startsWith("OFF")) {
         Serial.println("Set status to off");
         status = OFF;
+        lastStatus = OFF; //to prevent resending the just received status
       }
     }
   }
@@ -321,7 +323,7 @@ void setup()
   setup_wifi();
 
   //connect MQTT
-  client.setServer(mqtt_server, 18830);
+  client.setServer(mqtt_server, 1883);
   if (!client.connected()) {
    Serial.println("MQTT not connected - trying reconnect!");
    reconnect();
@@ -341,7 +343,9 @@ void loop() {
   led.loop();
   wLevel.loop();
   Serial.print("Status: ");
-  Serial.println(String(statusName[status]).c_str());
+  Serial.print(String(statusName[status]).c_str());
+  Serial.print(" / ");
+  Serial.println(String(statusName[lastStatus]).c_str());
   if (status != lastStatus){
     Serial.print("Updating MQTT Status to: ");
     Serial.println(String(statusName[status]).c_str());
